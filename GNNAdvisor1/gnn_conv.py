@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import torch
 import math
-import GNNAdvisor as GNNA
+import GNNAdvisor1 as GNNA
 from param import *
 
 class ScatterAndGather(torch.autograd.Function):
