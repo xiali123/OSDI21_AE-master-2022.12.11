@@ -43,12 +43,14 @@ __global__ void spmm_forward_cuda_kernel(
     torch::PackedTensorAccessor32<float,1,torch::RestrictPtrTraits> degrees,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 );
 
 template <typename scalar_t>
@@ -60,12 +62,14 @@ __global__ void spmm_forward_cuda_kernel_gin(
     float epsilon,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 );
 
 template <typename scalar_t>
@@ -77,12 +81,14 @@ __global__ void spmm_backward_cuda_kernel(
     torch::PackedTensorAccessor32<float,1,torch::RestrictPtrTraits> degrees,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 );
 
 template <typename scalar_t>
@@ -94,12 +100,14 @@ __global__ void spmm_backward_cuda_kernel_gin(
     float epsilon,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 ); 
 
 ////////////////////////////////////////////
@@ -274,9 +282,11 @@ std::vector<torch::Tensor> spmm_forward_cuda(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
 ) 
 {
     auto tmp = torch::mm(input, weight);
@@ -288,7 +298,7 @@ std::vector<torch::Tensor> spmm_forward_cuda(
 
     const int block = warpPerBlock * WARP_SIZE;
     const int grid = (num_parts * WARP_SIZE + block  - 1) / block; 
-    int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
+    int shared_memory = partSize*warpPerBlock*sizeof(int)*2+warpPerBlock*dim*sizeof(float);
 
     // printf("grid: %d, block: %d\n", grid, block);
     // printf("dim: %d, num_nodes: %d, num_parts: %d\n", dim, num_nodes, num_parts);
@@ -305,12 +315,14 @@ std::vector<torch::Tensor> spmm_forward_cuda(
                                     degrees.packed_accessor32<float,1,torch::RestrictPtrTraits>(),
                                     part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(), 
                                     part2Node.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    block_hash.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     num_nodes, 
                                     dim,
                                     num_parts,
                                     partSize,
                                     dimWorker,
-                                    warpPerBlock
+                                    warpPerBlock,
+                                    smSize
                                 );
                             }));
                                  
@@ -332,23 +344,29 @@ __global__ void spmm_forward_cuda_kernel(
     torch::PackedTensorAccessor32<float,1,torch::RestrictPtrTraits> degrees,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 ) 
 {
-
     int tid =  blockIdx.x * blockDim.x + threadIdx.x;  // global thread-id
     int warpId = tid / WARP_SIZE;                             // global warp-id
+    //int hash_blockId = block_hash[blockIdx.x];
+
+    //int cur_tid = hash_blockId * blockDim.x + threadIdx.x;  // global thread-id
+    //int warpId = cur_tid / WARP_SIZE;
     int block_warpId = threadIdx.x / WARP_SIZE;               // block warp-id
     int laneid = threadIdx.x % WARP_SIZE;                     // warp thread-id -- laneid
 
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
-    float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
+    int *partial_degree = (int*)&part_meta[partSize*warpPerBlock];
+    float *partial_results = (float*)&part_meta[partSize*warpPerBlock*2];     // caching partial results.
 
     if (warpId < num_parts){
 
@@ -364,32 +382,26 @@ __global__ void spmm_forward_cuda_kernel(
             // if(column_index[nidx] >= num_nodes || column_index[nidx] < 0) printf("column_index: %d\n", column_index[nidx]);
             partial_ids[pindex_base + nidx - partBeg] = column_index[nidx];
         }
-        
-        // #pragma unroll
-        // for (int nidx = partBeg; nidx < partEnd; nidx++){
-        // //     if(column_index[nidx] >= num_nodes || column_index[nidx] < 0) printf("column_index: %d\n", column_index[nidx]);
-        //     partial_ids[nidx - partBeg] = column_index[nidx];
-        // }
+        __syncwarp();
+        //const int pdegree_base = block_warpId * dim;
+        #pragma unroll
+        for (int nid = partBeg + laneid; nid < partEnd; nid += WARP_SIZE){
+            //printf("%d %d\n", nid, block_hash[nid]);
+            partial_degree[pindex_base + nid - partBeg] = block_hash[nid];
+        }
         
         __syncwarp();
 
-        // if (laneid == 0)
-        // for (int nIdx = laneid; nIdx < partEnd - partBeg; nIdx++){
-            // int nid = partial_ids[pindex_base + nIdx];
-            // int nid = partial_ids[nIdx];
-            // printf("verify nid - 111111: %d\n", nid);
-            // if(nid >= num_nodes || nid < 0) printf("verify nid: %d\n", nid);
-        // }
-
         // Neighbor aggregation within each part
-        const int presult_base = block_warpId * dim;
+        const int presult_base = block_warpId * dim;;
         for (int nIdx = 0; nIdx < partEnd - partBeg; nIdx++)
         {
             int nid = partial_ids[pindex_base + nIdx];
+            int degree_tag = partial_degree[pindex_base + nIdx];
             // int nid = partial_ids[nIdx];
             // if (laneid == 0)
             //     printf("verify nid - 222222: %d\n", nid);
-            float degree_norm_inv = __fmaf_rn(src_norm, degrees[nid], 0);
+            float degree_norm_inv = __fmaf_rn(src_norm, degree_tag, 0);
 
             // Initialize shared memory for partial results
             if (nIdx == 0)
@@ -431,9 +443,11 @@ std::vector<torch::Tensor> spmm_backward_cuda(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
 ) 
 {
 
@@ -446,7 +460,7 @@ std::vector<torch::Tensor> spmm_backward_cuda(
     const int block = warpPerBlock*WARP_SIZE;
     const int grid = (num_parts*WARP_SIZE + block - 1) / block; 
     // const int shared_memory = warpPerBlock * partSize * sizeof(int) + warpPerBlock * dim * sizeof(float);
-    int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
+    int shared_memory = partSize*warpPerBlock*sizeof(int)*2+warpPerBlock*dim*sizeof(float);
 
     AT_DISPATCH_FLOATING_TYPES(d_output.type(), "spmm_cuda_backward", ([&] {
                                 spmm_backward_cuda_kernel<scalar_t><<<grid, block, shared_memory>>>(
@@ -457,12 +471,14 @@ std::vector<torch::Tensor> spmm_backward_cuda(
                                     degrees.packed_accessor32<float,1,torch::RestrictPtrTraits>(),
                                     part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(), 
                                     part2Node.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    block_hash.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     num_nodes, 
                                     dim,
                                     num_parts,
                                     partSize,
                                     dimWorker,
-                                    warpPerBlock
+                                    warpPerBlock,
+                                    smSize
                                 );
                             }));
 
@@ -488,23 +504,31 @@ __global__ void spmm_backward_cuda_kernel(
     torch::PackedTensorAccessor32<float,1,torch::RestrictPtrTraits> degrees,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 ) 
 {
 
     int tid =  blockIdx.x * blockDim.x + threadIdx.x;
     int warpId =  tid / WARP_SIZE;
+
+    //int hash_blockId = block_hash[blockIdx.x];
+    //int cur_tid = hash_blockId * blockDim.x + threadIdx.x;  // global thread-id
+    //int warpId = cur_tid / WARP_SIZE;
+
     int block_warpId = threadIdx.x / WARP_SIZE;
     int laneid = threadIdx.x % WARP_SIZE;
 
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
-    float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
+    int *partial_degree = (int *)&part_meta[partSize*warpPerBlock];
+    float *partial_results = (float*)&part_meta[partSize*warpPerBlock*2];     // caching partial results.
 
     if (warpId < num_parts){
 
@@ -518,21 +542,23 @@ __global__ void spmm_backward_cuda_kernel(
         for (int nid = partBeg + laneid; nid < partEnd; nid += WARP_SIZE){
             partial_ids[pindex_base + nid - partBeg] = column_index[nid];
         }
-        
-        // #pragma unroll
-        // for (int nidx = partBeg; nidx < partEnd; nidx++){
-        // //     if(column_index[nidx] >= num_nodes || column_index[nidx] < 0) printf("column_index: %d\n", column_index[nidx]);
-        //     partial_ids[nidx - partBeg] = column_index[nidx];
-        // }
+        __syncwarp();
+        //const int pdegree_base = block_warpId * dim;
+        #pragma unroll
+        for (int nid = partBeg + laneid; nid < partEnd; nid += WARP_SIZE){
+            //printf("%d %d\n", nid, block_hash[nid]);
+            partial_degree[pindex_base + nid - partBeg] = block_hash[nid];
+        }
 
         __syncwarp();
 
-        const int presult_base = block_warpId * dim;
+        const int presult_base = block_warpId * dim;;
         for (int nIdx = 0; nIdx < partEnd - partBeg; nIdx++)
         {
             int nid = partial_ids[pindex_base + nIdx];
             // int nid = partial_ids[nIdx];
-            float degree_norm =  __fmaf_rn(src_norm, degrees[nid], 0);
+            int degree_tag = partial_degree[pindex_base + nIdx];
+            float degree_norm =  __fmaf_rn(src_norm, degree_tag , 0);
 
             if (nIdx == 0)
                 if (laneid < dimWorker)
@@ -569,9 +595,11 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
 ) 
 {
     auto tmp = torch::zeros_like(input);
@@ -598,12 +626,14 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
                                     epsilon,
                                     part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(), 
                                     part2Node.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    block_hash.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     num_nodes, 
                                     dim,
                                     num_parts,
                                     partSize, 
                                     dimWorker, 
-                                    warpPerBlock
+                                    warpPerBlock,
+                                    smSize
                                 );
                             }));
     
@@ -631,17 +661,25 @@ __global__ void spmm_forward_cuda_kernel_gin(
     float epsilon,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 ) 
 {
 
     int tid =  blockIdx.x * blockDim.x + threadIdx.x;  // global thread-id
     int warpId = tid / WARP_SIZE;                             // global warp-id
+
+    //int hash_blockId = block_hash[blockIdx.x];
+
+    //int cur_tid = hash_blockId * blockDim.x + threadIdx.x;  // global thread-id
+    //int warpId = cur_tid / WARP_SIZE;
+
     int block_warpId = threadIdx.x / WARP_SIZE;               // block warp-id
     int laneid = threadIdx.x % WARP_SIZE;                     // warp thread-id -- laneid
 
@@ -708,9 +746,11 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
 ) 
 {
 
@@ -735,12 +775,14 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
                                     epsilon,
                                     part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(), 
                                     part2Node.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    block_hash.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     num_nodes, 
                                     dim,
                                     num_parts,
                                     partSize, 
                                     dimWorker, 
-                                    warpPerBlock
+                                    warpPerBlock,
+                                    smSize
                                 );
                             }));
 
@@ -762,17 +804,25 @@ __global__ void spmm_backward_cuda_kernel_gin(
     float epsilon,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part_pointers,
     torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> part2Node,
+    torch::PackedTensorAccessor32<int,1,torch::RestrictPtrTraits> block_hash,
     const int num_nodes, 
     const int dim,
     const int num_parts,
     const int partSize,
     const int dimWorker,
-    const int warpPerBlock
+    const int warpPerBlock,
+    const int smSize
 ) 
 {
 
     int tid =  blockIdx.x * blockDim.x + threadIdx.x;
     int warpId =  tid / WARP_SIZE;
+
+    //int hash_blockId = block_hash[blockIdx.x];
+
+    //int cur_tid = hash_blockId * blockDim.x + threadIdx.x;  // global thread-id
+    //int warpId = cur_tid / WARP_SIZE;
+
     int block_warpId = threadIdx.x / WARP_SIZE;
     int laneid = threadIdx.x % WARP_SIZE;
     

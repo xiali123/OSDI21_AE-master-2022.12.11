@@ -21,7 +21,11 @@ else:
 partsize_li = [32]          # only effective in manual model
 
 dataset = [
-        ('citeseer'	        , 3703	    , 6   ),  
+        ( 'amazon0505'               , 96	, 22),
+]
+
+'''
+       ('citeseer'	        , 3703	    , 6   ),  
         ('cora' 	        , 1433	    , 7   ),  
         ('pubmed'	        , 500	    , 3   ),      
         ('ppi'	            , 50	    , 121 ),   
@@ -38,9 +42,7 @@ dataset = [
         ( 'com-amazon'               , 96	, 22),
         ( 'soc-BlogCatalog'	       	 , 128  , 39), 
         ( 'amazon0601'  	         , 96	, 22), 
-]
-
-
+'''
 for partsize in partsize_li:
     for hid in hidden:
         for data, d, c in dataset:

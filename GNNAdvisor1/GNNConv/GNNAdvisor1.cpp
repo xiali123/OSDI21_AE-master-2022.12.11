@@ -32,9 +32,11 @@ std::vector<torch::Tensor> spmm_forward_cuda(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
 );
 
 std::vector<torch::Tensor> spmm_backward_cuda(
@@ -46,9 +48,11 @@ std::vector<torch::Tensor> spmm_backward_cuda(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
   );
 
 std::vector<torch::Tensor> spmm_forward_cuda_gin(
@@ -59,9 +63,11 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
   );
 
 std::vector<torch::Tensor> spmm_backward_cuda_gin(
@@ -73,9 +79,11 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
   );
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.type().is_cuda(), #x " must be a CUDA tensor")
@@ -114,9 +122,12 @@ std::vector<torch::Tensor> spmm_forward(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock) 
+    int warpPerBlock,
+    int smSize
+)
 {
   CHECK_INPUT(input);
   CHECK_INPUT(weight);
@@ -127,8 +138,8 @@ std::vector<torch::Tensor> spmm_forward(
   CHECK_INPUT(part2Node);
 
   return spmm_forward_cuda(input, weight, row_pointers, column_index, 
-                            degrees, part_pointers, part2Node, 
-                            partSize, dimWorker, warpPerBlock);
+                            degrees, part_pointers, part2Node,block_hash,
+                            partSize, dimWorker, warpPerBlock, smSize);
 }
 
 std::vector<torch::Tensor> spmm_backward(
@@ -140,9 +151,11 @@ std::vector<torch::Tensor> spmm_backward(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
   ) 
 {
 
@@ -156,8 +169,8 @@ std::vector<torch::Tensor> spmm_backward(
   CHECK_INPUT(part2Node);
 
   return spmm_backward_cuda(d_output, X, W, row_pointers, column_index, 
-                            degrees, part_pointers, part2Node,
-                            partSize, dimWorker, warpPerBlock);
+                            degrees, part_pointers, part2Node,block_hash,
+                            partSize, dimWorker, warpPerBlock, smSize);
 }
 
 
@@ -172,9 +185,11 @@ std::vector<torch::Tensor> spmm_forward_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
   ) 
 {
   CHECK_INPUT(input);
@@ -185,8 +200,8 @@ std::vector<torch::Tensor> spmm_forward_gin(
   CHECK_INPUT(part2Node);
 
   return spmm_forward_cuda_gin(input, weight, row_pointers, column_index, 
-                              epsilon, part_pointers, part2Node, 
-                              partSize, dimWorker, warpPerBlock);
+                              epsilon, part_pointers, part2Node, block_hash,
+                              partSize, dimWorker, warpPerBlock, smSize);
 }
 
 ////////////////////////////////
@@ -201,9 +216,11 @@ std::vector<torch::Tensor> spmm_backward_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
+    torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int smSize
   )
 {
   CHECK_INPUT(d_output);
@@ -215,13 +232,49 @@ std::vector<torch::Tensor> spmm_backward_gin(
   CHECK_INPUT(part2Node);
 
   return spmm_backward_cuda_gin(d_output, X, W, row_pointers, column_index, 
-                            epsilon, part_pointers, part2Node,
-                            partSize, dimWorker, warpPerBlock);
+                            epsilon, part_pointers, part2Node,block_hash,
+                            partSize, dimWorker, warpPerBlock, smSize);
 }
 
 bool cmp(hashNode a, hashNode b)
 {
     return a.num < b.num;
+}
+
+torch::Tensor build_block_hash(
+    int num_parts,
+    int smSize,
+    int block,
+    int warpsize
+)
+{
+    int block_total_size = (num_parts * warpsize + block  - 1) / block;
+    torch::Tensor block_hash_table = torch::zeros(block_total_size).to(torch::kInt);
+    auto block_hash_ptr = block_hash_table.accessor<int, 1>();
+    int Block_Num = smSize * smSize;
+    for(int i = 0; i < block_total_size; i++)
+    {
+        int Loop_grid_warpId = i / Block_Num;
+        int Loop_grid_lainId = i % Block_Num;
+
+        int L_warpId = Loop_grid_lainId / smSize;
+        int L_lainId = Loop_grid_lainId % smSize;
+
+        int cur_max_size = (Loop_grid_warpId+1)*Block_Num > block_total_size? block_total_size:(Loop_grid_warpId+1)*Block_Num;
+        int cur_Loop_grid_size = cur_max_size - Loop_grid_warpId * Block_Num;
+
+        int Row_Max_Size = cur_Loop_grid_size / smSize;
+        int Col_Max_Size = cur_max_size % smSize;
+        if(Loop_grid_lainId < Col_Max_Size) Row_Max_Size++;
+        int Hash_warpId = L_warpId;
+        if(Row_Max_Size > 0)
+        {
+            Hash_warpId = (L_warpId - L_lainId % Row_Max_Size + Row_Max_Size) % Row_Max_Size;
+        }
+        int Hash_lainId = L_lainId;
+        block_hash_ptr[i] = Loop_grid_warpId * Block_Num + Hash_warpId * smSize + Hash_lainId;
+    }
+    return block_hash_table;
 }
 
 std::vector<torch::Tensor> build_new_csr(
@@ -237,7 +290,7 @@ std::vector<torch::Tensor> build_new_csr(
     auto row_pointer = row_table.accessor<int, 1>();
     auto column_pointer = column_table.accessor<int, 1>();
 
-        //hash映射
+    //hash映射
     //printf("2.%d\n", num_vexs);
     torch::Tensor hash_table = torch::zeros_like(degrees);
     auto hash_table_ptr = hash_table.accessor<int, 1>();
@@ -252,7 +305,7 @@ std::vector<torch::Tensor> build_new_csr(
         hash_vct.push_back(tag_hash);
     }
     std::sort(hash_vct.begin(), hash_vct.end(), cmp);
-    //hash映射
+    //h
     //printf("3.\n");
     //新的csr结构
     torch::Tensor row_new_table = torch::zeros_like(row_table).to(torch::kInt);
@@ -271,15 +324,22 @@ std::vector<torch::Tensor> build_new_csr(
         for(int j = 0; j < cur_degree_num; j++) col_new_ptr[c++] = column_pointer[col_pos+j];
     }
         //hash映射
+
+    torch::Tensor col_degree_table = torch::zeros_like(column_table).to(torch::kInt);
+    auto col_degree_ptr = col_degree_table.accessor<int, 1>();
+    for(int i = 0; i < col_new_table.size(0); i++)
+    {
+        col_degree_ptr[i] = degrees_ptr[col_new_ptr[i]];
+    }
     //printf("4.\n");
-    return {row_new_table, col_new_table, hash_table};
+    return {row_new_table, col_new_table, col_degree_table, hash_table};
 }
 
-std::vector<torch::Tensor> build_part(
+std::vector<torch::Tensor> build_part1(
     int partSize, 
     torch::Tensor indptr,
     torch::Tensor hash_table
-  ) 
+)
 {
     //printf("build_part:%d %d\n", indptr.size(0), hash_table.size(0));
   auto hash_table_ptr = hash_table.accessor<int, 1>();
@@ -321,6 +381,51 @@ std::vector<torch::Tensor> build_part(
   return {partPtr, part2Node};
 }
 
+
+std::vector<torch::Tensor> build_part(
+    int partSize,
+    torch::Tensor indptr
+  )
+{
+    //printf("build_part:%d %d\n", indptr.size(0), hash_table.size(0));
+  auto indptr_acc = indptr.accessor<int, 1>();
+  int num_nodes = indptr.size(0) - 1;
+  int degree, thisNumParts, numParts = 0;
+
+	for(int i = 0; i < num_nodes; i++)
+	{
+    degree = indptr_acc[i + 1] - indptr_acc[i];
+	  if(degree % partSize == 0)
+			thisNumParts = degree / partSize;
+    else
+			thisNumParts = degree / partSize + 1;
+    numParts += thisNumParts;
+	}
+
+  auto partPtr = torch::zeros(numParts + 1);
+  auto part2Node = torch::zeros(numParts);
+
+  int part_counter = 0;
+	for(int i = 0; i < num_nodes; i++)
+	{
+    int degree = indptr_acc[i + 1] - indptr_acc[i];
+    if(degree % partSize == 0)
+			thisNumParts = degree / partSize ;
+    else
+			thisNumParts = degree / partSize + 1;
+
+    for (int pid = 0; pid < thisNumParts; pid++){
+      int partBeg = indptr_acc[i] + pid * partSize;
+      int partEnd = partBeg + partSize < indptr_acc[i  + 1]? partBeg + partSize: indptr_acc[i + 1];
+      partPtr[part_counter] = partBeg;
+      part2Node[part_counter++] = i;                                            //映射，修改的地方
+      if (i == num_nodes - 1 &&  partEnd == indptr_acc[i + 1])
+        partPtr[part_counter] = partEnd;
+    }
+	}
+  return {partPtr, part2Node};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("SAG", &SAG, "GNNAdvisor1 base Scatter-and-Gather Kernel (CUDA)");
 
@@ -332,4 +437,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
   m.def("build_part", &build_part, "GNNAdvisor1 backward (CPU)");
   m.def("build_new_csr", &build_new_csr, "GNNAdvisor1 backward (CPU)");
+  m.def("build_part1", &build_part1, "GNNAdvisor1 backward (CPU)");
+  m.def("build_block_hash", &build_block_hash, "GNNAdvisor1 backward (CPU)");
   }
