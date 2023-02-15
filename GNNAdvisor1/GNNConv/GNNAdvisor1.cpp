@@ -5,11 +5,14 @@
 #include<iostream>
 #include<algorithm>
 
+#define max(a,b) (a>b)?a:b;
+#define min(a,b) (a>b)?b:a;
 typedef struct hashNode
 {
     int index;
     int num;
 }hashNode;
+
 
 torch::Tensor SAG_cuda(
     torch::Tensor input,
@@ -32,7 +35,7 @@ std::vector<torch::Tensor> spmm_forward_cuda(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -48,7 +51,7 @@ std::vector<torch::Tensor> spmm_backward_cuda(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -63,7 +66,7 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -79,7 +82,7 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -122,7 +125,7 @@ std::vector<torch::Tensor> spmm_forward(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -138,7 +141,7 @@ std::vector<torch::Tensor> spmm_forward(
   CHECK_INPUT(part2Node);
 
   return spmm_forward_cuda(input, weight, row_pointers, column_index, 
-                            degrees, part_pointers, part2Node,block_hash,
+                            degrees, part_pointers, part2Node,
                             partSize, dimWorker, warpPerBlock, smSize);
 }
 
@@ -151,7 +154,7 @@ std::vector<torch::Tensor> spmm_backward(
     torch::Tensor degrees,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -169,7 +172,7 @@ std::vector<torch::Tensor> spmm_backward(
   CHECK_INPUT(part2Node);
 
   return spmm_backward_cuda(d_output, X, W, row_pointers, column_index, 
-                            degrees, part_pointers, part2Node,block_hash,
+                            degrees, part_pointers, part2Node,
                             partSize, dimWorker, warpPerBlock, smSize);
 }
 
@@ -185,7 +188,7 @@ std::vector<torch::Tensor> spmm_forward_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -200,7 +203,7 @@ std::vector<torch::Tensor> spmm_forward_gin(
   CHECK_INPUT(part2Node);
 
   return spmm_forward_cuda_gin(input, weight, row_pointers, column_index, 
-                              epsilon, part_pointers, part2Node, block_hash,
+                              epsilon, part_pointers, part2Node,
                               partSize, dimWorker, warpPerBlock, smSize);
 }
 
@@ -216,7 +219,7 @@ std::vector<torch::Tensor> spmm_backward_gin(
     float epsilon,
     torch::Tensor part_pointers,
     torch::Tensor part2Node,
-    torch::Tensor block_hash,
+    //torch::Tensor block_hash,
     int partSize, 
     int dimWorker, 
     int warpPerBlock,
@@ -232,7 +235,7 @@ std::vector<torch::Tensor> spmm_backward_gin(
   CHECK_INPUT(part2Node);
 
   return spmm_backward_cuda_gin(d_output, X, W, row_pointers, column_index, 
-                            epsilon, part_pointers, part2Node,block_hash,
+                            epsilon, part_pointers, part2Node,
                             partSize, dimWorker, warpPerBlock, smSize);
 }
 
@@ -323,62 +326,104 @@ std::vector<torch::Tensor> build_new_csr(
         row_new_ptr[i] = row_new_ptr[i-1] + cur_degree_num;
         for(int j = 0; j < cur_degree_num; j++) col_new_ptr[c++] = column_pointer[col_pos+j];
     }
-        //hash映射
 
-    torch::Tensor col_degree_table = torch::zeros_like(column_table).to(torch::kInt);
+    //hash映射
+    torch::Tensor col_degree_table = torch::zeros_like(degrees).to(torch::kInt);
     auto col_degree_ptr = col_degree_table.accessor<int, 1>();
-    for(int i = 0; i < col_new_table.size(0); i++)
+    for(int i = 0; i < num_vexs; i++)
     {
-        col_degree_ptr[i] = degrees_ptr[col_new_ptr[i]];
+        col_degree_ptr[i] = degrees_ptr[hash_table_ptr[i]];
     }
     //printf("4.\n");
     return {row_new_table, col_new_table, col_degree_table, hash_table};
 }
 
+
+int getPartSize_inc(
+    int limit_partsize,
+    int degree,
+    int old_degree,
+    int cur_part,
+    double k
+)
+{
+    double var_degree = (double)degree;
+    double var_old_degree = (double)old_degree;
+    //int t = cur_part + (int)((var_degree-var_old_degree)/var_old_degree/k * cur_part);
+    int t = (int)((var_degree)/k/cur_part*cur_part);
+    return min(t, limit_partsize);
+}
+
 std::vector<torch::Tensor> build_part1(
     int partSize, 
+    int max_degree,
+    double k,
     torch::Tensor indptr,
     torch::Tensor hash_table
 )
 {
     //printf("build_part:%d %d\n", indptr.size(0), hash_table.size(0));
-  auto hash_table_ptr = hash_table.accessor<int, 1>();
-  auto indptr_acc = indptr.accessor<int, 1>();
-  int num_nodes = indptr.size(0) - 1;
-  int degree, thisNumParts, numParts = 0;
+    auto hash_table_ptr = hash_table.accessor<int, 1>();
+    auto indptr_acc = indptr.accessor<int, 1>();
+    int num_nodes = indptr.size(0) - 1;
+    int degree, thisNumParts, numParts = 0;
+    int part_size = partSize;
+    int old_degree = 1;
+    int max_part = partSize;
 
-	for(int i = 0; i < num_nodes; i++)
-	{
-    degree = indptr_acc[i + 1] - indptr_acc[i];
-	  if(degree % partSize == 0)
-			thisNumParts = degree / partSize;
-    else
-			thisNumParts = degree / partSize + 1;
-    numParts += thisNumParts;
-	}
+    int limit_degree = max_degree;
+    if(max_degree > 256) limit_degree = min(256, max_degree/2);
+    for(int i = 0; i < num_nodes; i++)
+    {
+        int src_idx = hash_table_ptr[i];
+        degree = indptr_acc[i + 1] - indptr_acc[i];
+        //sum += degree;
+        if(max_degree < 32) part_size = max_degree;
+        else if(degree <= partSize) part_size = partSize;
+        else part_size = max(partSize, getPartSize_inc(limit_degree, degree, old_degree, partSize, k));
 
-  auto partPtr = torch::zeros(numParts + 1);
-  auto part2Node = torch::zeros(numParts);
-	
-  int part_counter = 0;
-	for(int i = 0; i < num_nodes; i++)
-	{
-    int degree = indptr_acc[i + 1] - indptr_acc[i];
-    if(degree % partSize == 0)
-			thisNumParts = degree / partSize ;
-    else
-			thisNumParts = degree / partSize + 1;
-
-    for (int pid = 0; pid < thisNumParts; pid++){
-      int partBeg = indptr_acc[i] + pid * partSize;
-      int partEnd = partBeg + partSize < indptr_acc[i  + 1]? partBeg + partSize: indptr_acc[i + 1];
-      partPtr[part_counter] = partBeg;
-      part2Node[part_counter++] = hash_table_ptr[i];                                            //映射，修改的地方
-      if (i == num_nodes - 1 &&  partEnd == indptr_acc[i + 1])
-        partPtr[part_counter] = partEnd;
+        max_part = max(part_size, max_part)
+        if(degree % part_size == 0)
+            thisNumParts = degree / part_size;
+        else
+            thisNumParts = degree / part_size + 1;
+        numParts += thisNumParts;
+        old_degree = degree;
     }
-	}
-  return {partPtr, part2Node};
+
+    auto partPtr = torch::zeros(numParts + 1);
+    auto part2Node = torch::zeros(numParts);
+    torch::Tensor partInfo = torch::zeros(1).to(torch::kInt);
+    auto partInfo_ptr = partInfo.accessor<int, 1>();
+    part_size = partSize;
+    int part_counter = 0;
+    for(int i = 0, old_degree = 0; i < num_nodes; i++)
+    {
+        int src_idx = hash_table_ptr[i];
+        degree = indptr_acc[i + 1] - indptr_acc[i];
+
+        if(max_degree < 32) part_size = max_degree;
+        else if(degree <= partSize) part_size = partSize;
+        else part_size = part_size = max(partSize, getPartSize_inc(limit_degree, degree, old_degree, partSize, k));
+
+        if(degree % part_size == 0)
+            thisNumParts = degree / part_size;
+        else
+            thisNumParts = degree / part_size + 1;
+
+        for (int pid = 0; pid < thisNumParts; pid++){
+            int partBeg = indptr_acc[i] + pid * part_size;
+            int partEnd = partBeg + part_size < indptr_acc[i + 1]? partBeg + part_size: indptr_acc[i + 1];
+            partPtr[part_counter] = partBeg;
+            part2Node[part_counter++] = src_idx;                                            //映射，修改的地方
+            if (i == num_nodes - 1 &&  partEnd == indptr_acc[i + 1])
+                partPtr[part_counter] = partEnd;
+        }
+        old_degree = degree;
+    }
+
+    partInfo_ptr[0] = max_part;
+    return {partPtr, part2Node, partInfo};
 }
 
 

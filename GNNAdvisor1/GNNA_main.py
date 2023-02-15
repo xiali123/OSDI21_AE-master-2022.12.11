@@ -104,10 +104,22 @@ inputInfo.smSize = torch.cuda.get_device_properties(torch.cuda.current_device())
 # Building neighbor partitioning.
 ####################################
 start = time.perf_counter()
-new_row_pointers, new_col_pointers, block_hash, hash_table = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
-#partPtr, part2Node = GNNA.build_part1(inputInfo.partSize, new_row_pointers, hash_table)
-partPtr, part2Node = GNNA.build_part(inputInfo.partSize, inputInfo.row_pointers)
+new_row_pointers, new_col_pointers, col_degree_table, hash_table = GNNA.build_new_csr(inputInfo.dataset_obj.degreeCpu, inputInfo.row_pointers, inputInfo.column_index)
 
+
+max_degree = col_degree_table[num_nodes-1].item()
+print(max_degree)
+print(inputInfo.partSize)
+partPtr, part2Node, partInfo = GNNA.build_part1(inputInfo.partSize, int(max_degree), 20.00, new_row_pointers, hash_table)
+inputInfo.row_pointers = new_row_pointers.int().to(device)
+inputInfo.column_index = new_col_pointers.int().to(device)
+
+'''
+partPtr, part2Node = GNNA.build_part(inputInfo.partSize, inputInfo.row_pointers)
+inputInfo.row_pointers  = inputInfo.row_pointers.to(device)
+inputInfo.column_index  = inputInfo.column_index.to(device)
+'''
+#exit(0)
 ####################################
 # Building block hash.
 ####################################
@@ -119,14 +131,11 @@ build_neighbor_parts = time.perf_counter() - start
 if verbose_mode:
     print("# Build nb_part (s): {:.3f}".format(build_neighbor_parts))
 
-inputInfo.row_pointers  = inputInfo.row_pointers.to(device)
-#inputInfo.row_pointers = new_row_pointers.int().to(device)
-inputInfo.column_index  = inputInfo.column_index.to(device)
-#inputInfo.column_index  = new_col_pointers.int().to(device)
 inputInfo.partPtr = partPtr.int().to(device)
 inputInfo.part2Node  = part2Node.int().to(device)
-inputInfo.block_hash  = block_hash.int().to(device)
-
+#inputInfo.block_hash  = block_hash.int().to(device)
+inputInfo.partSize_info = partInfo.item()
+print(inputInfo.partSize_info)
 
 ####################################
 # Verifing a single SpMM kernel
