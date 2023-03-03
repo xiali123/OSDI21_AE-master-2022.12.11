@@ -119,6 +119,7 @@ class custom_dataset(torch.nn.Module):
 
         # Get degrees array.
         degrees = (self.row_pointers[1:] - self.row_pointers[:-1]).tolist()
+        self.degreeTable = torch.IntTensor(degrees)
         self.degrees = torch.sqrt(torch.FloatTensor(list(map(func, degrees)))).cuda()
 
     def init_embedding(self, dim):

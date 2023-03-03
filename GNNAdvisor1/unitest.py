@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import torch
-import GNNAdvisor as GNNA
+import GNNAdvisor1 as GNNA
 import time
 from tqdm import *
 from torch_sparse import spmm

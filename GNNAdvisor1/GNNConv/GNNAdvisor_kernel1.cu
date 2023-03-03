@@ -353,8 +353,8 @@ __global__ void spmm_forward_cuda_kernel(
     if (warpId < num_parts){
 
         int srcId = part2Node[warpId];              // aggregated source node
-        int partBeg = part_pointers[warpId];        // partitioning pointer start
-        int partEnd = part_pointers[warpId + 1];    // part pointer end
+        int partBeg = part_pointers[warpId*2];        // partitioning pointer start
+        int partEnd = part_pointers[warpId*2 + 1];    // part pointer end
         float src_norm = degrees[srcId];            // norm of the source node
 
         // Cache the part neighbors by all threads from a warp.
@@ -509,8 +509,8 @@ __global__ void spmm_backward_cuda_kernel(
     if (warpId < num_parts){
 
         const int srcId = part2Node[warpId];
-        const int partBeg = part_pointers[warpId];
-        const int partEnd = part_pointers[warpId + 1];
+        const int partBeg = part_pointers[warpId*2];
+        const int partEnd = part_pointers[warpId*2 + 1];
         float src_norm = degrees[srcId];
 
         const int pindex_base = block_warpId * partSize;

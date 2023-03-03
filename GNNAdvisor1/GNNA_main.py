@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from tqdm import *
 from scipy.sparse import *
 
-import GNNAdvisor as GNNA           # import GNNAdvisor
+import GNNAdvisor1 as GNNA           # import GNNAdvisor
 
 from gnn_conv import *
 from dataset import *
@@ -98,14 +98,19 @@ if verbose_mode:
 ####################################
 # Building neighbor partitioning.
 ####################################
+new_row_pointers, new_col_pointers, hash_table = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
+inputInfo.row_pointers = new_row_pointers
+inputInfo.column_index = new_col_pointers
+
 start = time.perf_counter()
-partPtr, part2Node = GNNA.build_part(inputInfo.partSize, inputInfo.row_pointers)
+partPtr, part2Node = GNNA.build_part1(inputInfo.partSize, int(num_nodes/2), inputInfo.row_pointers, inputInfo.column_index)
 build_neighbor_parts = time.perf_counter() - start
 if verbose_mode:
     print("# Build nb_part (s): {:.3f}".format(build_neighbor_parts))
 
 inputInfo.row_pointers  = inputInfo.row_pointers.to(device)
 inputInfo.column_index  = inputInfo.column_index.to(device)
+
 inputInfo.partPtr = partPtr.int().to(device)
 inputInfo.part2Node  = part2Node.int().to(device)
 
