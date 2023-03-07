@@ -98,9 +98,9 @@ if verbose_mode:
 ####################################
 # Building neighbor partitioning.
 ####################################
-new_row_pointers, new_col_pointers, hash_table = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
-inputInfo.row_pointers = new_row_pointers
-inputInfo.column_index = new_col_pointers
+#new_row_pointers, new_col_pointers, hash_table = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
+#inputInfo.row_pointers = new_row_pointers
+#inputInfo.column_index = new_col_pointers
 
 start = time.perf_counter()
 partPtr, part2Node = GNNA.build_part1(inputInfo.partSize, int(num_nodes/2), inputInfo.row_pointers, inputInfo.column_index)

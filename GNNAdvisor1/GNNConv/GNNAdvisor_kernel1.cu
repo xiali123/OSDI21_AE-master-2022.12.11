@@ -652,9 +652,10 @@ __global__ void spmm_forward_cuda_kernel_gin(
     if (warpId < num_parts){
 
         int srcId = part2Node[warpId];              // aggregated source node
-        int partBeg = part_pointers[warpId];        // partitioning pointer start
-        int partEnd = part_pointers[warpId + 1];    // part pointer end
-
+        //int partBeg = part_pointers[warpId];        // partitioning pointer start
+        //int partEnd = part_pointers[warpId + 1];    // part pointer end
+        const int partBeg = part_pointers[warpId*2];
+        const int partEnd = part_pointers[warpId*2 + 1];
         // Cache the part neighbors.
         const int pindex_base = block_warpId * partSize;
         #pragma unroll
@@ -783,8 +784,10 @@ __global__ void spmm_backward_cuda_kernel_gin(
     if (warpId < num_parts){
 
         int srcId = part2Node[warpId];
-        int partBeg = part_pointers[warpId];
-        int partEnd = part_pointers[warpId + 1];
+        //int partBeg = part_pointers[warpId];
+        //int partEnd = part_pointers[warpId + 1];
+        const int partBeg = part_pointers[warpId*2];
+        const int partEnd = part_pointers[warpId*2 + 1];
 
         const int pindex_base = block_warpId * partSize;
         #pragma unroll

@@ -151,7 +151,7 @@ class custom_dataset(torch.nn.Module):
                 print("Reorder flag is set. Continue...")
                 print("Original edge_index\n", self.edge_index)
             start = time.perf_counter()
-            #self.edge_index = rabbit.reorder(torch.IntTensor(self.edge_index))
+            self.edge_index = rabbit.reorder(torch.IntTensor(self.edge_index))
             reorder_time = time.perf_counter() - start
 
             if self.verbose_flag:

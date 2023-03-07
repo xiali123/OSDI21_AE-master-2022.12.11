@@ -44,7 +44,7 @@ dataset = [
 for partsize in partsize_li:
     for hid in hidden:
         for data, d, c in dataset:
-            command = "python GNNA_main.py --dataset {} --dim {} --hidden {} \
+            command = "/tmp/ENTER/bin/python GNNA_main.py --dataset {} --dim {} --hidden {} \
                         --classes {} --partSize {} --model {} --warpPerBlock {}\
                         --manual_mode {} --verbose_mode {} --enable_rabbit {} --loadFromTxt {}"
             command = command.format(data, d, hid, c, partsize, model, warpPerBlock,\
