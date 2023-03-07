@@ -60,7 +60,8 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
     torch::Tensor part2Node,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int dim_per_part
   );
 
 std::vector<torch::Tensor> spmm_backward_cuda_gin(
@@ -74,7 +75,8 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
     torch::Tensor part2Node,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int dim_per_part
   );
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.type().is_cuda(), #x " must be a CUDA tensor")
@@ -173,7 +175,8 @@ std::vector<torch::Tensor> spmm_forward_gin(
     torch::Tensor part2Node,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int dim_per_part
   ) 
 {
   CHECK_INPUT(input);
@@ -185,7 +188,7 @@ std::vector<torch::Tensor> spmm_forward_gin(
 
   return spmm_forward_cuda_gin(input, weight, row_pointers, column_index, 
                               epsilon, part_pointers, part2Node, 
-                              partSize, dimWorker, warpPerBlock);
+                              partSize, dimWorker, warpPerBlock, dim_per_part);
 }
 
 ////////////////////////////////
@@ -202,7 +205,8 @@ std::vector<torch::Tensor> spmm_backward_gin(
     torch::Tensor part2Node,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int dim_per_part
   )
 {
   CHECK_INPUT(d_output);
@@ -215,7 +219,7 @@ std::vector<torch::Tensor> spmm_backward_gin(
 
   return spmm_backward_cuda_gin(d_output, X, W, row_pointers, column_index, 
                             epsilon, part_pointers, part2Node,
-                            partSize, dimWorker, warpPerBlock);
+                            partSize, dimWorker, warpPerBlock, dim_per_part);
 }
 
 

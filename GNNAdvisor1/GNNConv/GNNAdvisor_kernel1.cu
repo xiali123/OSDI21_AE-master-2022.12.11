@@ -63,6 +63,8 @@ __global__ void spmm_forward_cuda_kernel_gin(
     const int num_nodes, 
     const int dim,
     const int num_parts,
+    const int total_num_parts,
+    const int dim_per_part,
     const int partSize,
     const int dimWorker,
     const int warpPerBlock
@@ -97,6 +99,8 @@ __global__ void spmm_backward_cuda_kernel_gin(
     const int num_nodes, 
     const int dim,
     const int num_parts,
+    const int total_num_parts,
+    const int dim_per_part,
     const int partSize,
     const int dimWorker,
     const int warpPerBlock
@@ -571,17 +575,19 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
     torch::Tensor part2Node,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int dim_per_part
 ) 
 {
     auto tmp = torch::zeros_like(input);
     const int dim = tmp.size(1);
     const int num_nodes = tmp.size(0);
     const int num_parts = part2Node.size(0);
+    const int total_num_parts = (dim + dim_per_part-1)/dim_per_part *num_parts;
 
-    const int block = warpPerBlock*WARP_SIZE;
-    const int grid = (num_parts*WARP_SIZE + block  - 1) / block; 
-    const int shared_memory = warpPerBlock*partSize*sizeof(int) + warpPerBlock*dim*sizeof(float);
+    const int block = min(warpPerBlock*WARP_SIZE, 1024);
+    const int grid = (total_num_parts*WARP_SIZE + block - 1) / block;
+    const int shared_memory = warpPerBlock*partSize*sizeof(int) + warpPerBlock*dim_per_part*sizeof(float);
 
     // printf("grid: %d, block: %d\n", grid, block);
     // printf("dim: %d, num_nodes: %d, num_parts: %d\n", dim, num_nodes, num_parts);
@@ -601,6 +607,8 @@ std::vector<torch::Tensor> spmm_forward_cuda_gin(
                                     num_nodes, 
                                     dim,
                                     num_parts,
+                                    total_num_parts,
+                                    dim_per_part,
                                     partSize, 
                                     dimWorker, 
                                     warpPerBlock
@@ -634,6 +642,8 @@ __global__ void spmm_forward_cuda_kernel_gin(
     const int num_nodes, 
     const int dim,
     const int num_parts,
+    const int total_num_parts,
+    const int dim_per_part,
     const int partSize,
     const int dimWorker,
     const int warpPerBlock
@@ -644,18 +654,21 @@ __global__ void spmm_forward_cuda_kernel_gin(
     int warpId = tid / WARP_SIZE;                             // global warp-id
     int block_warpId = threadIdx.x / WARP_SIZE;               // block warp-id
     int laneid = threadIdx.x % WARP_SIZE;                     // warp thread-id -- laneid
+    int cur_dim_base = warpId / num_parts * dim_per_part;
+    int cur_warp_id = warpId % num_parts;
+    int cur_dim_size = (dim_per_part > dim-cur_dim_base)? dim-cur_dim_base: dim_per_part;
 
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
     float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
 
-    if (warpId < num_parts){
+    if (warpId < total_num_parts){
 
-        int srcId = part2Node[warpId];              // aggregated source node
+        int srcId = part2Node[cur_warp_id];              // aggregated source node
         //int partBeg = part_pointers[warpId];        // partitioning pointer start
         //int partEnd = part_pointers[warpId + 1];    // part pointer end
-        const int partBeg = part_pointers[warpId*2];
-        const int partEnd = part_pointers[warpId*2 + 1];
+        const int partBeg = part_pointers[cur_warp_id*2];
+        const int partEnd = part_pointers[cur_warp_id*2 + 1];
         // Cache the part neighbors.
         const int pindex_base = block_warpId * partSize;
         #pragma unroll
@@ -666,7 +679,7 @@ __global__ void spmm_forward_cuda_kernel_gin(
          __syncwarp();
 
         // Neighbor aggregation within each part
-        const int presult_base = block_warpId * dim;
+        const int presult_base = block_warpId * dim_per_part;
         for (int nIdx = 0; nIdx < partEnd - partBeg; nIdx++)
         {
             int nid = partial_ids[pindex_base + nIdx];
@@ -675,22 +688,22 @@ __global__ void spmm_forward_cuda_kernel_gin(
             if (nIdx == 0)
                 if (laneid < dimWorker)
                 #pragma unroll
-                for (int d = laneid; d < dim; d += dimWorker){
+                for (int d = laneid; d < cur_dim_size; d += dimWorker){
                     partial_results[presult_base + d] = 0.0f;
                 }
             
             if (laneid < dimWorker)
             #pragma unroll
-            for (int d = laneid; d < dim; d += dimWorker){
-                partial_results[presult_base + d] += input[nid][d];
+            for (int d = laneid; d < cur_dim_size; d += dimWorker){
+                partial_results[presult_base + d] += input[nid][d+cur_dim_base];
             }
         }
 
         // output the result to global memory from the shared memory
         if (laneid < dimWorker)
         #pragma unroll
-        for (int d = laneid; d < dim; d += dimWorker){
-            atomicAdd_F((float*)&output[srcId][d], epsilon*partial_results[presult_base + d]);
+        for (int d = laneid; d < cur_dim_size; d += dimWorker){
+            atomicAdd_F((float*)&output[srcId][d+cur_dim_base], epsilon*partial_results[presult_base + d]);
         }
     }
 }
@@ -711,7 +724,8 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
     torch::Tensor part2Node,
     int partSize, 
     int dimWorker, 
-    int warpPerBlock
+    int warpPerBlock,
+    int dim_per_part
 ) 
 {
 
@@ -722,10 +736,11 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
     const int dim = d_input.size(1);
     const int num_nodes = d_input.size(0);
     const int num_parts = part2Node.size(0);
+    const int total_num_parts = (dim + dim_per_part-1)/dim_per_part *num_parts;
 
-    const int block = warpPerBlock*WARP_SIZE;
-    const int grid = (num_parts*WARP_SIZE + block - 1) / block; 
-    int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
+    const int block = min(warpPerBlock*WARP_SIZE, 1024);
+    const int grid = (total_num_parts*WARP_SIZE + block - 1) / block;
+    int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim_per_part*sizeof(float);
 
     AT_DISPATCH_FLOATING_TYPES(d_output.type(), "spmm_cuda_backward_gin", ([&] {
                                 spmm_backward_cuda_kernel_gin<scalar_t><<<grid, block, shared_memory>>>(
@@ -739,6 +754,8 @@ std::vector<torch::Tensor> spmm_backward_cuda_gin(
                                     num_nodes, 
                                     dim,
                                     num_parts,
+                                    total_num_parts,
+                                    dim_per_part,
                                     partSize, 
                                     dimWorker, 
                                     warpPerBlock
@@ -766,6 +783,8 @@ __global__ void spmm_backward_cuda_kernel_gin(
     const int num_nodes, 
     const int dim,
     const int num_parts,
+    const int total_num_parts,
+    const int dim_per_part,
     const int partSize,
     const int dimWorker,
     const int warpPerBlock
@@ -776,18 +795,21 @@ __global__ void spmm_backward_cuda_kernel_gin(
     int warpId =  tid / WARP_SIZE;
     int block_warpId = threadIdx.x / WARP_SIZE;
     int laneid = threadIdx.x % WARP_SIZE;
-    
+    //int total_num_parts = (dim + dim_per_part-1)/dim_per_part * num_parts;
+    int cur_dim_base = warpId / num_parts * dim_per_part;
+    int cur_warp_id = warpId % num_parts;
+    int cur_dim_size = (dim_per_part > dim-cur_dim_base)? dim-cur_dim_base: dim_per_part;
+
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
     float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
 
-    if (warpId < num_parts){
-
-        int srcId = part2Node[warpId];
+    if (warpId < total_num_parts){
+        int srcId = part2Node[cur_warp_id];
         //int partBeg = part_pointers[warpId];
         //int partEnd = part_pointers[warpId + 1];
-        const int partBeg = part_pointers[warpId*2];
-        const int partEnd = part_pointers[warpId*2 + 1];
+        const int partBeg = part_pointers[cur_warp_id*2];
+        const int partEnd = part_pointers[cur_warp_id*2 + 1];
 
         const int pindex_base = block_warpId * partSize;
         #pragma unroll
@@ -797,7 +819,7 @@ __global__ void spmm_backward_cuda_kernel_gin(
 
         __syncwarp();
 
-        const int presult_base = block_warpId * dim;
+        const int presult_base = block_warpId * dim_per_part;
         for (int nIdx = 0; nIdx < partEnd - partBeg; nIdx++)
         {
             int nid = partial_ids[pindex_base + nIdx];
@@ -805,21 +827,21 @@ __global__ void spmm_backward_cuda_kernel_gin(
             if (nIdx == 0)
                 #pragma unroll
                 if (laneid < dimWorker)
-                for (int d = laneid; d < dim; d += dimWorker){
+                for (int d = laneid; d < cur_dim_size; d += dimWorker){
                     partial_results[presult_base + d] = 0;
                 }
             
             if (laneid < dimWorker)
             #pragma unroll
-            for (int d = laneid; d < dim; d += dimWorker){
-                partial_results[presult_base + d] += d_output[nid][d];
+            for (int d = laneid; d < cur_dim_size; d += dimWorker){
+                partial_results[presult_base + d] += d_output[nid][d+cur_dim_base];
             }
         }
 
         if (laneid < dimWorker)
         #pragma unroll
-        for (int d = laneid; d < dim; d += dimWorker){
-            atomicAdd_F((float*)&d_input[srcId][d], epsilon*partial_results[presult_base + d]);
+        for (int d = laneid; d < cur_dim_size; d += dimWorker){
+            atomicAdd_F((float*)&d_input[srcId][d+cur_dim_base], epsilon*partial_results[presult_base + d]);
         }
     }
 }
