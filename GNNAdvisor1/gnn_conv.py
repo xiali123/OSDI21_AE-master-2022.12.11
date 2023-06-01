@@ -34,7 +34,7 @@ class GNNAFunction(torch.autograd.Function):
         ctx.save_for_backward(X, weight)
         ctx.inputInfo = inputInfo
         ctx.partSize, ctx.dimWorker, ctx.warpPerBlock = \
-            inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock
+            inputInfo.partSize_info, inputInfo.dimWorker, inputInfo.warpPerBlock
 
         # print("[Foward]: {}\n{}\n{}\n{}\n{}".format(inputInfo.row_pointers, inputInfo.column_index, 
         #                                 inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node))    
@@ -43,7 +43,7 @@ class GNNAFunction(torch.autograd.Function):
 
         X_prime = GNNA.forward(X, weight, inputInfo.row_pointers, inputInfo.column_index, 
                                 inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node, \
-                                inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock)[0]
+                                inputInfo.partSize_info, inputInfo.dimWorker, inputInfo.warpPerBlock)[0]
         
 
         # print(X.size())
@@ -104,12 +104,12 @@ class GNNAFunction_GIN(torch.autograd.Function):
         # print("partSize: {}, dimWorker: {}, warpPerBlock: {}".format(inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock))
         X_prime, X_agg = GNNA.forward_gin(X, weight, inputInfo.row_pointers, inputInfo.column_index, 
                                         eplison, inputInfo.partPtr, inputInfo.part2Node, 
-                                        inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock,inputInfo.dim_per_part)
+                                        inputInfo.partSize_info, inputInfo.dimWorker, inputInfo.warpPerBlock,inputInfo.dim_per_part)
 
         ctx.save_for_backward(X_agg, weight)
         ctx.inputInfo = inputInfo
         ctx.partSize, ctx.dimWorker, ctx.warpPerBlock, ctx.dim_per_part, ctx.eplison = \
-            inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock,inputInfo.dim_per_part, eplison
+            inputInfo.partSize_info, inputInfo.dimWorker, inputInfo.warpPerBlock,inputInfo.dim_per_part, eplison
 
         return X_prime
 

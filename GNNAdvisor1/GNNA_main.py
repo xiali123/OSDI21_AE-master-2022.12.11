@@ -22,7 +22,7 @@ parser.add_argument("--classes", type=int, default=22, help="output classes size
 
 # Model training related parameters.
 parser.add_argument('--model', type=str, default='gcn', choices=['gcn', 'gin'],  help="GCN or GIN")
-parser.add_argument("--num_epoches", type=int, default=200, help="number of epoches for training, default=200")
+parser.add_argument("--num_epoches", type=int, default=100, help="number of epoches for training, default=200")
 
 # Manually set the performance related parameters
 parser.add_argument("--partSize", type=int, default=32, help="neighbor-group size")
@@ -70,10 +70,10 @@ row_pointers = dataset.row_pointers
 degrees = dataset.degrees
 
 ####################################
-# Building input property profile.
+# Building input property profile.dataset.num_features
 ####################################
 inputInfo = inputProperty(row_pointers, column_index, degrees, 
-                            partSize, dimWorker, warpPerBlock, sharedMem, 64,
+                            partSize, dimWorker, warpPerBlock, sharedMem, 32,
                             hiddenDim=args.hidden, dataset_obj=dataset, enable_rabbit=enable_rabbit,
                             manual_mode=manual_mode, verbose=verbose_mode)
 
@@ -98,12 +98,15 @@ if verbose_mode:
 ####################################
 # Building neighbor partitioning.
 ####################################
-new_row_pointers, new_col_pointers, hash_table = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
+new_row_pointers, new_col_pointers, new_degree_ptr = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
 inputInfo.row_pointers = new_row_pointers
 inputInfo.column_index = new_col_pointers
 
+max_degree = new_degree_ptr[num_nodes-1].item()
+
 start = time.perf_counter()
-partPtr, part2Node = GNNA.build_part1(inputInfo.partSize, int(num_nodes/2), inputInfo.row_pointers, inputInfo.column_index)
+partPtr, part2Node, partInfo = GNNA.build_part1(inputInfo.partSize, int(num_nodes),int(max_degree), 15, 512, inputInfo.row_pointers, inputInfo.column_index)
+print("信息：{}， {}， {}".format(max_degree, partInfo.item(), inputInfo.partSize))
 build_neighbor_parts = time.perf_counter() - start
 if verbose_mode:
     print("# Build nb_part (s): {:.3f}".format(build_neighbor_parts))
@@ -113,6 +116,7 @@ inputInfo.column_index  = inputInfo.column_index.to(device)
 
 inputInfo.partPtr = partPtr.int().to(device)
 inputInfo.part2Node  = part2Node.int().to(device)
+inputInfo.partSize_info = partInfo.item()
 
 ####################################
 # Verifing a single SpMM kernel

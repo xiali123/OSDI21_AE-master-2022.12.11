@@ -4,6 +4,9 @@
 #include<algorithm>
 #include<iostream>
 #include<algorithm>
+
+#define max(a,b) (a>b)?a:b
+#define min(a,b) (a>b)?b:a
 typedef struct hashNode
 {
     int index;
@@ -272,9 +275,31 @@ bool cmp(hashNode a, hashNode b)
     return a.num < b.num;
 }
 
+int getPartSize_inc(
+    int limit_partsize,
+    int degree,
+    int old_degree,
+    int avg_degree,
+    int cur_part,
+    double k
+)
+{
+    double var_degree = (double)degree;
+    //double var_old_degree = (double)old_degree;
+    double res = log2(var_degree);
+    //int t = cur_part + max((int)((var_degree-avg_degree)/avg_degree/k * cur_part), 0);
+    int t = (int)(pow(k/10, res));
+    //printf("test success!!!");
+    //int t = (int)((var_degree)/k/cur_part*cur_part);
+    return min((max(t, avg_degree)), limit_partsize);
+}
+
 std::vector<torch::Tensor> build_part1(
     int partSize,
     int col_slice_size,
+    int max_degree,
+    double k,
+    int limit_dgre,
     torch::Tensor row_idx,
     torch::Tensor col_idx
 )
@@ -289,22 +314,35 @@ std::vector<torch::Tensor> build_part1(
     int vex_map[num_nodes];
     memset(vex_map, 0, sizeof(vex_map));
     int slice_end = (num_nodes+col_slice_size-1)/col_slice_size*col_slice_size;
+    printf("%d %d\n", slice_end, num_nodes);
 
+    int part_size = partSize;
+    int max_part = partSize;
+    int old_degree = 1;
 
-    for(int i = col_slice_size; i < slice_end; i += col_slice_size)
+    int limit_degree = max_degree;
+    if(max_degree > 256) limit_degree = min(limit_dgre, max_degree/2);
+
+    for(int i = col_slice_size; i <= slice_end; i += col_slice_size)
     {
         for(int j = 0; j < num_nodes; j++)
         {
             int col_beg = row_index[j];
             int col_end = row_index[j+1];
             int cur_col_beg = col_beg + vex_map[j];
+            int degree = col_end - col_beg;
 
+            if(max_degree < 32) part_size = max_degree;
+            else if(degree <= partSize) part_size = partSize;
+            else part_size = max(partSize, getPartSize_inc(limit_degree, degree, old_degree, partSize, part_size, k));
+
+            max_part = max(part_size, max_part);
             int cur_col_num = 0;
             for(int v = cur_col_beg; v < col_end; v++)
             {
                 if(col_index[v] >= i) break;
                 cur_col_num++;
-                if(cur_col_num >= partSize)
+                if(cur_col_num >= part_size)
                 {
                     vex_map[j] += cur_col_num;
                     row_vex.push_back(j);
@@ -322,6 +360,8 @@ std::vector<torch::Tensor> build_part1(
                 col_vex.push_back(cur_col_beg);
                 col_vex.push_back(col_beg+vex_map[j]);
             }
+
+            old_degree = degree;
         }
     }
 
@@ -335,7 +375,10 @@ std::vector<torch::Tensor> build_part1(
         partPtr[i*2+1] = col_vex[i*2+1];
     }
 
-    return {partPtr, part2Node};
+    torch::Tensor partInfo = torch::zeros(1).to(torch::kInt);
+    auto partInfo_ptr = partInfo.accessor<int, 1>();
+    partInfo_ptr[0] = max_part;
+    return {partPtr, part2Node, partInfo};
 }
 
 std::vector<torch::Tensor> build_new_csr(
@@ -366,6 +409,10 @@ std::vector<torch::Tensor> build_new_csr(
         hash_vct.push_back(tag_hash);
     }
     std::sort(hash_vct.begin(), hash_vct.end(), cmp);
+
+    torch::Tensor new_degree = torch::zeros_like(degrees);
+    auto new_degree_ptr = new_degree.accessor<int, 1>();
+
     //hash映射
     //printf("3.\n");
     //新的csr结构
@@ -381,12 +428,13 @@ std::vector<torch::Tensor> build_new_csr(
         int cur_degree_num = hash_vct[i-1].num;
         int col_pos = row_pointer[hash_tag];
         hash_table_ptr[i-1] = hash_tag;
+        new_degree_ptr[i-1] = cur_degree_num;
         row_new_ptr[i] = row_new_ptr[i-1] + cur_degree_num;
         for(int j = 0; j < cur_degree_num; j++) col_new_ptr[c++] = column_pointer[col_pos+j];
     }
         //hash映射
     //printf("4.\n");
-    return {row_new_table, col_new_table, hash_table};
+    return {row_new_table, col_new_table, new_degree};
 }
 
 

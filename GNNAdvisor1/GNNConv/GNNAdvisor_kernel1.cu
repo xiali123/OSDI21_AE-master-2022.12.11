@@ -283,33 +283,29 @@ std::vector<torch::Tensor> spmm_forward_cuda(
     int warpPerBlock
 ) 
 {
-    auto tmp = torch::mm(input, weight);
     // auto output = torch::zeros_like(tmp);
     auto output = torch::zeros({input.size(0), weight.size(1)}, torch::kCUDA);
-    const int dim = output.size(1);
-    const int num_nodes = output.size(0);
-    const int num_parts = part2Node.size(0);
+    if(input.size(1) > weight.size(1))
+    {
+        int dim = output.size(1);
+        int num_nodes = output.size(0);
+        int num_parts = part2Node.size(0);
 
-    const int block = warpPerBlock * WARP_SIZE;
-    const int grid = (num_parts * WARP_SIZE + block  - 1) / block; 
-    int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
+        int block = warpPerBlock * WARP_SIZE;
+        int grid = (num_parts * WARP_SIZE + block  - 1) / block;
+        int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
 
-    // printf("grid: %d, block: %d\n", grid, block);
-    // printf("dim: %d, num_nodes: %d, num_parts: %d\n", dim, num_nodes, num_parts);
-    // printf("input: (%d, %d)\n", tmp.size(0), tmp.size(1));
-    // printf("dimWorker: %d\n", dimWorker);
-    // printf("shared_memory: %d\n", tmp.size(0), tmp.size(1));
-
-    AT_DISPATCH_FLOATING_TYPES(input.type(), "spmm_cuda_forward", ([&] {
+        auto tmp = torch::mm(input, weight);
+        AT_DISPATCH_FLOATING_TYPES(input.type(), "spmm_cuda_forward", ([&] {
                                 spmm_forward_cuda_kernel<scalar_t><<<grid, block, shared_memory>>>(
                                     output.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
                                     tmp.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
-                                    row_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(), 
+                                    row_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     column_index.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     degrees.packed_accessor32<float,1,torch::RestrictPtrTraits>(),
-                                    part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(), 
+                                    part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
                                     part2Node.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
-                                    num_nodes, 
+                                    num_nodes,
                                     dim,
                                     num_parts,
                                     partSize,
@@ -317,6 +313,35 @@ std::vector<torch::Tensor> spmm_forward_cuda(
                                     warpPerBlock
                                 );
                             }));
+    }
+    else
+    {
+        auto tmp = torch::zeros_like(input);
+        int dim = tmp.size(1);
+        int num_nodes = tmp.size(0);
+        int num_parts = part2Node.size(0);
+        int block = warpPerBlock * WARP_SIZE;
+        int grid = (num_parts * WARP_SIZE + block  - 1) / block;
+        int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
+            AT_DISPATCH_FLOATING_TYPES(input.type(), "spmm_cuda_forward", ([&] {
+                                spmm_forward_cuda_kernel<scalar_t><<<grid, block, shared_memory>>>(
+                                    tmp.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
+                                    input.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
+                                    row_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    column_index.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    degrees.packed_accessor32<float,1,torch::RestrictPtrTraits>(),
+                                    part_pointers.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    part2Node.packed_accessor32<int,1,torch::RestrictPtrTraits>(),
+                                    num_nodes,
+                                    dim,
+                                    num_parts,
+                                    partSize,
+                                    dimWorker,
+                                    warpPerBlock
+                                );
+                            }));
+        output = torch::mm(tmp, weight);
+    }
                                  
     cudaError_t error = cudaGetLastError();
     if(error != cudaSuccess){
@@ -349,12 +374,12 @@ __global__ void spmm_forward_cuda_kernel(
     int warpId = tid / WARP_SIZE;                             // global warp-id
     int block_warpId = threadIdx.x / WARP_SIZE;               // block warp-id
     int laneid = threadIdx.x % WARP_SIZE;                     // warp thread-id -- laneid
-
+    warpId = num_parts - warpId - 1;
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
     float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
 
-    if (warpId < num_parts){
+    if (warpId >= 0){
 
         int srcId = part2Node[warpId];              // aggregated source node
         int partBeg = part_pointers[warpId*2];        // partitioning pointer start
@@ -440,18 +465,13 @@ std::vector<torch::Tensor> spmm_backward_cuda(
     int warpPerBlock
 ) 
 {
-
     auto d_input_prime = torch::zeros_like(d_output);
-
     const int dim = d_input_prime.size(1);
     const int num_nodes = d_input_prime.size(0);
     const int num_parts = part2Node.size(0);
-
-    const int block = warpPerBlock*WARP_SIZE;
-    const int grid = (num_parts*WARP_SIZE + block - 1) / block; 
-    // const int shared_memory = warpPerBlock * partSize * sizeof(int) + warpPerBlock * dim * sizeof(float);
-    int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
-
+    const int block = warpPerBlock * WARP_SIZE;
+    const int grid = (num_parts * WARP_SIZE + block  - 1) / block;
+    const int shared_memory = partSize*warpPerBlock*sizeof(int)+warpPerBlock*dim*sizeof(float);
     AT_DISPATCH_FLOATING_TYPES(d_output.type(), "spmm_cuda_backward", ([&] {
                                 spmm_backward_cuda_kernel<scalar_t><<<grid, block, shared_memory>>>(
                                     d_input_prime.packed_accessor32<scalar_t,2,torch::RestrictPtrTraits>(),
@@ -505,12 +525,12 @@ __global__ void spmm_backward_cuda_kernel(
     int warpId =  tid / WARP_SIZE;
     int block_warpId = threadIdx.x / WARP_SIZE;
     int laneid = threadIdx.x % WARP_SIZE;
-
+    warpId = num_parts - warpId - 1;
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
     float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
 
-    if (warpId < num_parts){
+    if (warpId >= 0){
 
         const int srcId = part2Node[warpId];
         const int partBeg = part_pointers[warpId*2];
@@ -657,12 +677,12 @@ __global__ void spmm_forward_cuda_kernel_gin(
     int cur_dim_base = warpId / num_parts * dim_per_part;
     int cur_warp_id = warpId % num_parts;
     int cur_dim_size = (dim_per_part > dim-cur_dim_base)? dim-cur_dim_base: dim_per_part;
-
+    warpId = total_num_parts - warpId - 1;
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
     float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
 
-    if (warpId < total_num_parts){
+    if (warpId >= 0){
 
         int srcId = part2Node[cur_warp_id];              // aggregated source node
         //int partBeg = part_pointers[warpId];        // partitioning pointer start
@@ -799,12 +819,12 @@ __global__ void spmm_backward_cuda_kernel_gin(
     int cur_dim_base = warpId / num_parts * dim_per_part;
     int cur_warp_id = warpId % num_parts;
     int cur_dim_size = (dim_per_part > dim-cur_dim_base)? dim-cur_dim_base: dim_per_part;
-
+    warpId = num_parts - warpId - 1;
     extern __shared__ int part_meta[];                                      // part information.
     int *partial_ids = part_meta;                                           // caching ids
     float *partial_results = (float*)&part_meta[partSize*warpPerBlock];     // caching partial results.
 
-    if (warpId < total_num_parts){
+    if (warpId >= 0){
         int srcId = part2Node[cur_warp_id];
         //int partBeg = part_pointers[warpId];
         //int partEnd = part_pointers[warpId + 1];
