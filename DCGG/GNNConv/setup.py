@@ -2,16 +2,16 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(
-    name='GNNAdvisor1',
+    name='DCGG',
     ext_modules=[
         CUDAExtension(
-        name='GNNAdvisor1',
+        name='DCGG',
         sources=[   
-                    'GNNAdvisor1.cpp',
-                    'GNNAdvisor_kernel1.cu'
+                    'DCGG.cpp',
+                    'DCGG_kernel1.cu'
                 ]
         )
     ],
     cmdclass={
-        'build_ext': BuildExtension
+        'build_ext': BuildExtension.with_options(use_ninja=False)
     })

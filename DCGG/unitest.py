@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import torch
-import GNNAdvisor1 as GNNA
+import DCGG
 import time
 from tqdm import *
 from torch_sparse import spmm
@@ -47,7 +47,7 @@ class Verification(object):
         '''
         print("# Compute result on GPU")
         X = self.X.cuda()
-        self.result = GNNA.SAG(X, self.row_pointers, self.column_index, self.degrees,\
+        self.result = DCGG.SAG(X, self.row_pointers, self.column_index, self.degrees,\
                                     self.partPtr, self.part2Node, self.partSize, self.dimWorker, self.warpPerBlock)
         # print(self.result)
 
@@ -68,12 +68,12 @@ class Verification(object):
         print("SpMM profiling size: N: {}, N: {}, K: {}".format(X.size(0), X.size(0), X.size(1)))
         # dry run
         for _ in range(10):
-            self.result = GNNA.SAG(X, self.row_pointers, self.column_index, self.degrees,\
+            self.result = DCGG.SAG(X, self.row_pointers, self.column_index, self.degrees,\
                                     self.partPtr, self.part2Node, self.partSize, self.dimWorker, self.warpPerBlock)
         torch.cuda.synchronize()
         start = time.perf_counter()
         for _ in tqdm(range(round)):
-            self.result = GNNA.SAG(X, self.row_pointers, self.column_index, self.degrees,\
+            self.result = DCGG.SAG(X, self.row_pointers, self.column_index, self.degrees,\
                             self.partPtr, self.part2Node, self.partSize, self.dimWorker, self.warpPerBlock)
         torch.cuda.synchronize()
         dur = time.perf_counter() - start

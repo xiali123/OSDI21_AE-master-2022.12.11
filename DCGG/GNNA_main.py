@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from tqdm import *
 from scipy.sparse import *
 
-import GNNAdvisor1 as GNNA           # import GNNAdvisor
+import DCGG          # import DCGG
 
 from gnn_conv import *
 from dataset import *
@@ -22,11 +22,11 @@ parser.add_argument("--classes", type=int, default=22, help="output classes size
 
 # Model training related parameters.
 parser.add_argument('--model', type=str, default='gcn', choices=['gcn', 'gin'],  help="GCN or GIN")
-parser.add_argument("--num_epoches", type=int, default=100, help="number of epoches for training, default=200")
+parser.add_argument("--num_epoches", type=int, default=50, help="number of epoches for training, default=200")
 
 # Manually set the performance related parameters
 parser.add_argument("--partSize", type=int, default=32, help="neighbor-group size")
-parser.add_argument("--dimWorker", type=int, default=16, help="number of worker threads (MUST < 32)")
+parser.add_argument("--dimWorker", type=int, default=32, help="number of worker threads (MUST < 32)")
 parser.add_argument("--warpPerBlock", type=int, default=4, help="number of warp per block, recommended: GCN: 8, GIN: 2")
 parser.add_argument("--sharedMem", type=int, default=100, help="shared memory size of each block (Quadro P6000 64(KB) sm_61), default=100(KB) for RTX3090 sm_86")
 
@@ -38,6 +38,15 @@ parser.add_argument('--loadFromTxt', type=str, choices=['True', 'False'], defaul
 parser.add_argument('--single_spmm', type=str, choices=['True', 'False'], default='False', help="True: profile the single SpMM (neighbor aggregation) kernel for number epoches times")
 parser.add_argument('--verify_spmm', type=str, choices=['True', 'False'], default='False', help="True: verify the output correctness of a single SpMM (neighbor aggregation) kernel against the CPU reference implementation.")
 
+#ours' setups
+parser.add_argument('--is_sort', type=str, choices=['True', 'False'], default='True', help="True: .")
+parser.add_argument('--is_dynamic_warp', type=str, choices=['True', 'False'], default='True', help="True: ")
+parser.add_argument('--is_data_stream', type=str, choices=['True', 'False'], default='True', help="True: ")
+parser.add_argument('--is_dim_slice', type=str, choices=['True', 'False'], default='True', help="True: ")
+parser.add_argument('--warp_size_k', type=int, default=18, help="True: ")
+parser.add_argument('--cur_dim_slice', type=int, default=32, help="True: ")
+parser.add_argument('--max_warp_size', type=int, default=512, help="True: ")
+parser.add_argument('--column_slice_size', type=int, default=1, help="slice size")
 args = parser.parse_args()
 print(args)
 
@@ -49,6 +58,15 @@ loadFromTxt = args.loadFromTxt == 'True'
 single_spmm = args.single_spmm == 'True'
 verify_spmm = args.verify_spmm == 'True'
 
+is_sort = args.is_sort == 'True'
+is_dynamic_warp = args.is_dynamic_warp == 'True'
+is_data_stream = args.is_data_stream == 'True'
+is_dim_slice = args.is_dim_slice == 'True'
+warp_size_k = float(args.warp_size_k)
+cur_dim_slice = args.cur_dim_slice
+max_warp_size = args.max_warp_size
+column_slice_size = args.column_slice_size
+
 # requires GPU for evaluation.
 assert torch.cuda.is_available()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -58,10 +76,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ####################################
 if loadFromTxt:
     path = osp.join(args.dataDir, args.dataset)
-    dataset = custom_dataset(path, args.dim, args.classes, load_from_txt=True, verbose=verbose_mode)
+    dataset = custom_dataset(path, args.dim, args.classes, load_from_txt=True, verbose=verbose_mode, dataname=args.dataset)
 else:
     path = osp.join(args.dataDir, args.dataset+".npz")
-    dataset = custom_dataset(path, args.dim, args.classes, load_from_txt=False, verbose=verbose_mode)
+    dataset = custom_dataset(path, args.dim, args.classes, load_from_txt=False, verbose=verbose_mode, dataname=args.dataset)
 
 num_nodes = dataset.num_nodes
 num_edges = dataset.num_edges
@@ -73,7 +91,7 @@ degrees = dataset.degrees
 # Building input property profile.dataset.num_features
 ####################################
 inputInfo = inputProperty(row_pointers, column_index, degrees, 
-                            partSize, dimWorker, warpPerBlock, sharedMem, 32,
+                            partSize, dimWorker, warpPerBlock, sharedMem, cur_dim_slice,
                             hiddenDim=args.hidden, dataset_obj=dataset, enable_rabbit=enable_rabbit,
                             manual_mode=manual_mode, verbose=verbose_mode)
 
@@ -98,15 +116,15 @@ if verbose_mode:
 ####################################
 # Building neighbor partitioning.
 ####################################
-new_row_pointers, new_col_pointers, new_degree_ptr = GNNA.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
-inputInfo.row_pointers = new_row_pointers
-inputInfo.column_index = new_col_pointers
+new_row_pointers, new_col_pointers, new_degree_ptr = DCGG.build_new_csr(inputInfo.dataset_obj.degreeTable, inputInfo.row_pointers, inputInfo.column_index)
+if is_sort:
+    inputInfo.row_pointers = new_row_pointers
+    inputInfo.column_index = new_col_pointers
 
 max_degree = new_degree_ptr[num_nodes-1].item()
-
 start = time.perf_counter()
-partPtr, part2Node, partInfo = GNNA.build_part1(inputInfo.partSize, int(num_nodes),int(max_degree), 15, 512, inputInfo.row_pointers, inputInfo.column_index)
-print("信息：{}， {}， {}".format(max_degree, partInfo.item(), inputInfo.partSize))
+partPtr, part2Node, partInfo = DCGG.build_part1(inputInfo.partSize, int(column_slice_size),int(max_degree), warp_size_k, max_warp_size, inputInfo.row_pointers, inputInfo.column_index)
+print("信息：{}， {}， {}".format(max_degree, partInfo[0].item(), inputInfo.partSize))
 build_neighbor_parts = time.perf_counter() - start
 if verbose_mode:
     print("# Build nb_part (s): {:.3f}".format(build_neighbor_parts))
@@ -198,7 +216,6 @@ if __name__ == '__main__':
     for _ in range(10):
         train()
     # exit(0)
-
     torch.cuda.synchronize()
     start_train = time.perf_counter()
     for _ in tqdm(range(1, args.num_epoches + 1)):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import torch
 import math
-import GNNAdvisor1 as GNNA
+import DCGG
 from param import *
 
 class ScatterAndGather(torch.autograd.Function):
@@ -14,7 +14,7 @@ class ScatterAndGather(torch.autograd.Function):
         ctx.inputInfo = inputInfo
         ctx.partSize, ctx.dimWorker, ctx.warpPerBlock = \
                         inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock
-        X_prime = GNNA.SAG(X, inputInfo.row_pointers, inputInfo.column_index, 
+        X_prime = DCGG.SAG(X, inputInfo.row_pointers, inputInfo.column_index, 
                             inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node, \
                                 inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock)
         return X_prime
@@ -22,7 +22,7 @@ class ScatterAndGather(torch.autograd.Function):
     @staticmethod
     def backward(ctx, d_output):
         inputInfo = ctx.inputInfo
-        d_input = GNNA.SAG(d_output, inputInfo.row_pointers, inputInfo.column_index, \
+        d_input = DCGG.SAG(d_output, inputInfo.row_pointers, inputInfo.column_index, \
                                     inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node, \
                                         ctx.partSize, ctx.dimWorker, ctx.warpPerBlock)
         return d_input
@@ -41,7 +41,7 @@ class GNNAFunction(torch.autograd.Function):
         # print("[Foward]: partSize: {}, dimWorker: {}, warpPerBlock: {}".format(ctx.partSize, \
         #                                                     ctx.dimWorker, ctx.warpPerBlock))
 
-        X_prime = GNNA.forward(X, weight, inputInfo.row_pointers, inputInfo.column_index, 
+        X_prime = DCGG.forward(X, weight, inputInfo.row_pointers, inputInfo.column_index, 
                                 inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node, \
                                 inputInfo.partSize_info, inputInfo.dimWorker, inputInfo.warpPerBlock)[0]
         
@@ -49,7 +49,7 @@ class GNNAFunction(torch.autograd.Function):
         # print(X.size())
         # print(weight.size())
         # X_prime = torch.mm(X, weight)
-        # X_prime = GNNA.SAG(X_prime, inputInfo.row_pointers, inputInfo.column_index, 
+        # X_prime = DCGG.SAG(X_prime, inputInfo.row_pointers, inputInfo.column_index, 
         #                     inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node, \
         #                         inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock)
         return X_prime
@@ -64,10 +64,10 @@ class GNNAFunction(torch.autograd.Function):
         # print("[Backward]: partSize: {}, dimWorker: {}, warpPerBlock: {}".format(ctx.partSize, \
         #                                                     ctx.dimWorker, ctx.warpPerBlock))
     
-        d_input, d_weight = GNNA.backward(d_output, X, weight, inputInfo.row_pointers, inputInfo.column_index, 
+        d_input, d_weight = DCGG.backward(d_output, X, weight, inputInfo.row_pointers, inputInfo.column_index, 
                                         inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node,
                                         ctx.partSize, ctx.dimWorker, ctx.warpPerBlock)
-        # d_X_prime = GNNA.SAG(d_output, inputInfo.row_pointers, inputInfo.column_index, 
+        # d_X_prime = DCGG.SAG(d_output, inputInfo.row_pointers, inputInfo.column_index, 
         #                             inputInfo.degrees, inputInfo.partPtr, inputInfo.part2Node, \
         #                                 inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock)
         # print(weight.size())
@@ -102,7 +102,7 @@ class GNNAFunction_GIN(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, inputInfo, eplison):
         # print("partSize: {}, dimWorker: {}, warpPerBlock: {}".format(inputInfo.partSize, inputInfo.dimWorker, inputInfo.warpPerBlock))
-        X_prime, X_agg = GNNA.forward_gin(X, weight, inputInfo.row_pointers, inputInfo.column_index, 
+        X_prime, X_agg = DCGG.forward_gin(X, weight, inputInfo.row_pointers, inputInfo.column_index, 
                                         eplison, inputInfo.partPtr, inputInfo.part2Node, 
                                         inputInfo.partSize_info, inputInfo.dimWorker, inputInfo.warpPerBlock,inputInfo.dim_per_part)
 
@@ -119,7 +119,7 @@ class GNNAFunction_GIN(torch.autograd.Function):
         X, weights  = ctx.saved_tensors
         inputInfo = ctx.inputInfo
 
-        d_input, d_weights = GNNA.backward_gin(d_output, X, weights, inputInfo.row_pointers, inputInfo.column_index,
+        d_input, d_weights = DCGG.backward_gin(d_output, X, weights, inputInfo.row_pointers, inputInfo.column_index,
                                                ctx.eplison, inputInfo.partPtr, inputInfo.part2Node,
                                                 ctx.partSize, ctx.dimWorker, ctx.warpPerBlock, ctx.dim_per_part)
         

@@ -301,7 +301,7 @@ __global__ void spmm_forward_cuda_kernel_gin(
                 for (int d = laneid; d < cur_dim_size; d += dimWorker){
                     partial_results[presult_base + d] = 0.0f;
                 }
-            
+            //if(nid >= 410236) printf("-----------ttttt>>>>>>>%d\n", nid);
             if (laneid < dimWorker)
             #pragma unroll
             for (int d = laneid; d < cur_dim_size; d += dimWorker){
@@ -389,6 +389,7 @@ int main(int argc, char *argv[])
 
     //创建数据
     //printf("point 3 \n");
+    int max_partSize = new_partInfo[0];
     int num_parts = new_part2Node.size();
     int *part2Node_d, *partPtr_d, *d_row_ptr_l, *d_col_ind_l;
     cudaMalloc((void**)&d_row_ptr_l, res_row_pointers.size()*sizeof(int));
@@ -411,18 +412,38 @@ int main(int argc, char *argv[])
 
     cudaMemcpy(input, h_input, dim*num_nodes*sizeof(float), cudaMemcpyHostToDevice);
     //训练
-    //printf("point 4 \n");
+   // printf("point 4 \n");
 
     float epsilon = 0.5;
     //cudaEvent_t e_start, e_end;
     //cudaEventCreate(&e_start);
     //cudaEventCreate(&e_end);
+
     //cudaEventRecord(e_start);
-    for(int i = 0; i < 1; i++)
-    {
-        spmm_forward_cuda_gin(output, input, d_row_ptr_l, d_col_ind_l, epsilon, partPtr_d, part2Node_d, dim, num_nodes, num_parts, partSize, dimWorker, warpPerBlock, dim_per_part);
-    }
+    partSize = max(partSize, max_partSize);
+    dim_per_part = min(dim, dim_per_part);
+    const int total_num_parts = (dim + dim_per_part-1)/dim_per_part *num_parts;
+
+    const int block = min(warpPerBlock*WARP_SIZE, 1024);
+    const int grid = (total_num_parts*WARP_SIZE + block - 1) / block;
+    const int shared_memory = warpPerBlock*partSize*sizeof(int) + warpPerBlock*dim_per_part*sizeof(float);
+
+    //printf("block=%d, grid=%d, shared_memory=%d  \n", block, grid, shared_memory);
+    //printf("d_row=%d, d_col=%d, partPtr_d=%d, part2Node_d=%d\n", res_row_pointers.size(), res_col_pointers.size(), new_partPtr.size(), new_part2Node.size());
+    spmm_forward_cuda_kernel_gin<<<grid, block, shared_memory>>>(output, input, d_row_ptr_l, d_col_ind_l, epsilon, partPtr_d, part2Node_d, num_nodes, dim, num_parts, total_num_parts, dim_per_part, partSize, dimWorker, warpPerBlock);
+
     cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if(error != cudaSuccess)
+    {
+        // print the CUDA error message and exit
+        printf("CUDA error: %s\n", cudaGetErrorString(error));
+        exit(-1);
+    }
+
+    printf("point 5 \n");
+        //spmm_forward_cuda_gin(output, input, d_row_ptr_l, d_col_ind_l, epsilon, partPtr_d, part2Node_d, dim, num_nodes, num_parts, partSize, dimWorker, warpPerBlock, dim_per_part);
+
     //cudaEventRecord(e_end);
     //cudaEventSynchronize(e_end);
     //float elapse_time = 0.0;
@@ -430,5 +451,5 @@ int main(int argc, char *argv[])
     //cudaEventDestroy(e_start);
     //cudaEventDestroy(e_end);
     //printf("Preproc (ms): %.3f\n", elapse_time);
-    return 1;
+    return 0;
 }

@@ -35,7 +35,7 @@ class inputProperty(object):
         self.warpPerBlock_hidden = warpPerBlock
         self.inputDim = dataset_obj.num_features
         self.hiddenDim = hiddenDim
-        self.dim_per_part = max(dim_per_part, min(32, self.inputDim))
+        self.dim_per_part = dim_per_part #min(max(dim_per_part, min(1, self.inputDim)), self.inputDim)
 
         self.manual_mode = manual_mode
         self.enable_rabbit = enable_rabbit
@@ -72,7 +72,7 @@ class inputProperty(object):
                 print("\n=> MANUAL Config Complete !!!\n")
         else:
             # Determine the neighbor partitioning.
-            self.partSize = int(self.avgNodeDegree)
+            self.partSize = min(int(self.avgNodeDegree), 32)
 
             est_shared = self.MAX_warpPerBlock * (self.partSize * 4 + self.inputDim * 4 + self.gap_smem * 4)/1e3
             if self.verbose_flag:

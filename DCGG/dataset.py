@@ -6,7 +6,7 @@ import dgl
 import os.path as osp
 
 from scipy.sparse import *
-import rabbit
+#import rabbit
 
 def func(x):
     '''
@@ -21,7 +21,7 @@ class custom_dataset(torch.nn.Module):
     """
     data loading for more graphs
     """
-    def __init__(self, path, dim, num_class, load_from_txt=True, verbose=False):
+    def __init__(self, path, dim, num_class, load_from_txt=True, verbose=False, dataname=""):
         super(custom_dataset, self).__init__()
 
         self.nodes = set()
@@ -31,6 +31,7 @@ class custom_dataset(torch.nn.Module):
         self.num_features = dim 
         self.num_classes = num_class
         self.edge_index = None
+        self.dataname = dataname
         
         self.reorder_flag = False
         self.verbose_flag = verbose
@@ -56,22 +57,38 @@ class custom_dataset(torch.nn.Module):
         self.g = dgl.DGLGraph()
 
         # loading from a txt graph file
+        max_index = 0
         if self.load_from_txt:
             fp = open(path, "r")
             src_li = []
             dst_li = []
             start = time.perf_counter()
             for line in fp:
-                src, dst = line.strip('\n').split()
-                src, dst = int(src), int(dst)
+                src = 0
+                dst = 0
+                if line.find(",") != -1:
+                    src, dst = line.strip('\n').split(",")
+                else:
+                    src, dst = line.strip('\n').split()
+                src = int(src)
+                dst = int(dst)
+
+                max_index = max(src, max_index)
+                max_index = max(dst, max_index)
                 src_li.append(src)
                 dst_li.append(dst)
+
+                #if self.dataname == "ogbn-proteins":
+                #    src_li.append(dst)
+                #    dst_li.append(src)
+
                 self.nodes.add(src)
                 self.nodes.add(dst)
+                #print("{} {}".format(src, dst))
             
             # self.g.add_edges(src_li, dst_li)
             self.num_edges = len(src_li)
-            self.num_nodes = max(self.nodes) + 1
+            self.num_nodes = max(self.nodes)+1
             self.edge_index = np.stack([src_li, dst_li])
 
             dur = time.perf_counter() - start
@@ -161,7 +178,7 @@ class custom_dataset(torch.nn.Module):
             # Rebuild a new graph CSR according to the updated edge_index
             val = [1] * self.num_edges
             start = time.perf_counter()
-            
+
             scipy_coo = coo_matrix((val, self.edge_index), shape=(self.num_nodes, self.num_nodes))
             scipy_csr = scipy_coo.tocsr()
             self.column_index = torch.IntTensor(scipy_csr.indices)
