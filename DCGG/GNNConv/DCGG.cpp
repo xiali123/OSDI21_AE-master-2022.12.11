@@ -296,7 +296,7 @@ int getPartSize_inc(
 
 std::vector<torch::Tensor> build_part1(
     int partSize,
-    int col_slice_size,
+    int col_slice_width,
     int max_degree,
     double k,
     int limit_dgre,
@@ -313,8 +313,8 @@ std::vector<torch::Tensor> build_part1(
     std::vector<int> col_vex;
     int vex_map[num_nodes];
     memset(vex_map, 0, sizeof(vex_map));
-    int slice_end = (num_nodes+col_slice_size-1)/col_slice_size*col_slice_size;
-    printf("%d %d\n", slice_end, num_nodes);
+    int col_slice_size = (num_nodes+col_slice_width-1)/col_slice_width;
+    int slice_end = col_slice_size*col_slice_width;
 
     int part_size = partSize;
     int max_part = partSize;
@@ -322,6 +322,7 @@ std::vector<torch::Tensor> build_part1(
 
     int limit_degree = max_degree;
     if(max_degree > 256) limit_degree = min(limit_dgre, max_degree/2);
+    part_size = min(limit_degree, part_size);
 
     for(int i = col_slice_size; i <= slice_end; i += col_slice_size)
     {
